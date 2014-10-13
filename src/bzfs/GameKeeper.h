@@ -164,6 +164,7 @@ public:
     bz_ServerSidePlayerHandler*	playerHandler;
 
 	bool addWasDelayed;
+	bool hadEnter;
 	double addDelayStartTime;
 
   private:
