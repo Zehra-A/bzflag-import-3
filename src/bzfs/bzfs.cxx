@@ -1229,6 +1229,7 @@ static void acceptClient()
     nerror("accepting on wks");
     return;
   }
+    
   // don't buffer info, send it immediately
   setNoDelay(fd);
   BzfNetwork::setNonBlocking(fd);
@@ -3269,7 +3270,8 @@ void grabFlag(int playerIndex, FlagInfo &flag, bool checkPos)
          logDebugMessage(2,"Player %s [%d] %f %f %f tried to grab distant flag %f %f %f: distance=%f\n",
       playerData->player.getCallSign(), playerIndex,
       tpos[0], tpos[1], tpos[2], fpos[0], fpos[1], fpos[2], sqrt(delta));
-      removePlayer(playerIndex, "attempted illegal flag grab");
+      // @TODO make a better test for this to reduce false positives
+      //removePlayer(playerIndex, "attempted illegal flag grab");
       return;
     }
   }
@@ -4128,7 +4130,7 @@ static void handleCommand(int t, void *rawbuf, bool udp)
   GameKeeper::Player *playerData = GameKeeper::Player::getPlayerByIndex(t);
   if (!playerData)
     return;
-  NetHandler *handler = playerData->netHandler;
+  NetHandler* handler = playerData->netHandler.get();
 
   uint16_t len, code;
   const void *buf = rawbuf;
@@ -4154,7 +4156,7 @@ static void handleCommand(int t, void *rawbuf, bool udp)
     }
   }
 
-  if(!playerData->player.isCompletelyAdded())
+  if (!playerData->player.isCompletelyAdded())
   {
 	  switch (code)
 	  {
@@ -6606,8 +6608,8 @@ int main(int argc, char **argv)
     }
 
     requestAuthentication = false;
-    for (int p = 0; p < curMaxPlayers; p++) {
-      GameKeeper::Player *playerData = GameKeeper::Player::getPlayerByIndex(p);
+    for (int p = 0; p < curMaxPlayers; ++p) {
+      GameKeeper::Player* playerData = GameKeeper::Player::getPlayerByIndex(p);
       if (!playerData)
 	continue;
       doStuffOnPlayer(*playerData);
@@ -6987,12 +6989,12 @@ int main(int argc, char **argv)
 
       // now check messages from connected players and send queued messages
       GameKeeper::Player *playerData;
-      NetHandler *netPlayer;
+      NetHandler* netPlayer(0);
       for (int j = 0; j < curMaxPlayers; j++) {
 	playerData = GameKeeper::Player::getPlayerByIndex(j);
 	if (!playerData || !playerData->netHandler)
 	  continue;
-	netPlayer = playerData->netHandler;
+	netPlayer = playerData->netHandler.get();
 	// send whatever we have ... if any
 	if (netPlayer->pflush(&write_set) == -1) {
 	  removePlayer(j, "ECONNRESET/EPIPE", false);

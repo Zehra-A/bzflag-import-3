@@ -19,6 +19,10 @@
 
 #include "bzfsAPI.h"
 
+#ifndef SHUT_RDWR
+  #define SHUT_RDWR -2
+#endif
+
 const int udpBufSize = 128000;
 
 std::vector<NetworkDataLogCallback*> logCallbacks;
@@ -127,7 +131,6 @@ int NetHandler::udpReceive(char *buffer, struct sockaddr_in *uaddr,
 			   bool &udpLinkRequest) {
   AddrLen recvlen = sizeof(*uaddr);
   int n;
-  int id;
   uint16_t len;
   uint16_t code;
   while (true) {
@@ -150,7 +153,7 @@ int NetHandler::udpReceive(char *buffer, struct sockaddr_in *uaddr,
     // Ping code request
     return -2;
 
-  id = -1;
+  int id(-1);	  // player index of the matched player
   int pi;
   udpLinkRequest = false;
   for (pi = 0; pi < maxHandlers; pi++)
@@ -244,20 +247,14 @@ NetHandler *NetHandler::netPlayer[maxHandlers] = {NULL};
 
 NetHandler::NetHandler(PlayerInfo* _info, const struct sockaddr_in &clientAddr,
 		       int _playerIndex, int _fd)
-  : info(_info), playerIndex(_playerIndex), fd(_fd),
+  : ares(new AresHandler(_playerIndex)), info(_info), uaddr(clientAddr),
+    playerIndex(_playerIndex), fd(_fd), peer(clientAddr),
     tcplen(0), closed(false),
-    outmsgOffset(0), outmsgSize(0), outmsgCapacity(0), outmsg(NULL),
-    udpOutputLen(0), udpin(false), udpout(false), toBeKicked(false) {
-
-  ares = new AresHandler(_playerIndex);
-
-  // store address information for player
-  AddrLen addr_len = sizeof(clientAddr);
-  memcpy(&uaddr, &clientAddr, addr_len);
-  peer = Address(uaddr);
-
+    outmsgOffset(0), outmsgSize(0), outmsgCapacity(0), outmsg(0),
+    udpOutputLen(0), udpin(false), udpout(false), toBeKicked(false),
+    time(_info->now)
+{
   // update player state
-  time = info->now;
 #ifdef NETWORK_STATS
 
   // initialize the inbound/outbound counters to zero
@@ -282,21 +279,17 @@ NetHandler::NetHandler(PlayerInfo* _info, const struct sockaddr_in &clientAddr,
 }
 
 NetHandler::NetHandler(const struct sockaddr_in &_clientAddr, int _fd)
-:fd(_fd),
-tcplen(0), closed(false),
-outmsgOffset(0), outmsgSize(0), outmsgCapacity(0), outmsg(NULL),
-udpOutputLen(0), udpin(false), udpout(false), toBeKicked(false)
+  : ares(0), info(0), playerIndex(-1), fd(_fd),
+    tcplen(0), closed(false),
+    outmsgOffset(0), outmsgSize(0), outmsgCapacity(0), outmsg(0),
+    udpOutputLen(0), udpin(false), udpout(false), toBeKicked(false),
+    time(TimeKeeper::getCurrent())
 {
-  ares = NULL;
-  info = NULL;
-  playerIndex = -1;
   // store address information for player
   AddrLen addr_len = sizeof(_clientAddr);
   memcpy(&uaddr, &_clientAddr, addr_len);
   peer = Address(uaddr);
 
-  // update player state
-  time = info->now;
 #ifdef NETWORK_STATS
 
   // initialize the inbound/outbound counters to zero
@@ -319,7 +312,7 @@ udpOutputLen(0), udpin(false), udpout(false), toBeKicked(false)
 
 void NetHandler::setPlayer ( PlayerInfo* p, int index )
 {
-  ares = new AresHandler(index);
+  ares.reset(new AresHandler(index));
 
   playerIndex = index;
   info = p;
@@ -334,10 +327,8 @@ NetHandler::~NetHandler() {
   if (info && info->isPlaying())
     dumpMessageStats();
 #endif
-  if (ares)
-    delete(ares);
   // shutdown TCP socket
-  shutdown(fd, 2);
+  shutdown(fd, SHUT_RDWR);
   close(fd);
 
   delete[] outmsg;
@@ -519,10 +510,11 @@ int NetHandler::pflush(fd_set *set) {
 RxStatus NetHandler::tcpReceive() {
   // read header if we don't have it yet
   RxStatus e = receive(4);
-  if (e != ReadAll)
+  if (e != ReadAll) {
     // if header not ready yet then skip the read of the body
     return e;
-
+  }
+  
   // read body if we don't have it yet
   uint16_t len, code;
   const void *buf = tcpmsg;
@@ -534,10 +526,12 @@ RxStatus NetHandler::tcpReceive() {
 	   playerIndex, len);
     return ReadHuge;
   }
+  // We haven't accounted for the header yet, so only ask receive() to get len (the payload) more bytes.
   e = receive(4 + (int) len);
-  if (e != ReadAll)
+  if (e != ReadAll) {
     // if body not ready yet then skip the command handling
     return e;
+  }
 
   // clear out message
   tcplen = 0;
@@ -556,11 +550,15 @@ RxStatus NetHandler::tcpReceive() {
 }
 
 RxStatus NetHandler::receive(size_t length, bool *retry) {
-  RxStatus returnValue;
+  RxStatus returnValue(ReadError);
+  
   if (retry)
     *retry = false;
-  if ((int)length <= tcplen)
-    return ReadAll;
+
+  // Degenerate case, becase a closed socket should not be sending data, but be paranoid and test for it anyway
+  if (closed) return returnValue;
+  
+  if ((int)length <= tcplen) return ReadAll;
   int size = recv(fd, tcpmsg + tcplen, (int)length - tcplen, 0);
   if (size > 0) {
     tcplen += size;
@@ -578,7 +576,7 @@ RxStatus NetHandler::receive(size_t length, bool *retry) {
       if (retry)
 	*retry = true;
       returnValue = ReadPart;
-    }else if (err == ECONNRESET || err == EPIPE) {
+    } else if (err == ECONNRESET || err == EPIPE) {
       // if socket is closed then give up
       returnValue = ReadReset;
     } else {
