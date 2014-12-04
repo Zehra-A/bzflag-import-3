@@ -140,7 +140,7 @@ int NetHandler::udpReceive(char *buffer, struct sockaddr_in *uaddr,
       break;
   }
   // Error receiving data (or no data)
-  if (n < 0)
+  if (n < 0 || uaddr->sin_port <= 1024)
     return -1;
 
   // read head
@@ -192,17 +192,17 @@ than %s:%d\n",
   }
 
   if (id == -1) {
+	  if (debugLevel < 4)
+		  return -1;
     // no match, discard packet
-    logDebugMessage(2,"uread() discard packet! %s:%d choices p(l) h:p",
+    logDebugMessage(3,"uread() discard packet! %s:%d choices p(l) h:p",
 	   inet_ntoa(uaddr->sin_addr), ntohs(uaddr->sin_port));
-    for (pi = 0; pi < maxHandlers; pi++) {
-      if (netPlayer[pi] && !netPlayer[pi]->closed)
-	logDebugMessage(3," %d(%d-%d) %s:%d", pi, netPlayer[pi]->udpin,
-	       netPlayer[pi]->udpout,
-	       inet_ntoa(netPlayer[pi]->uaddr.sin_addr),
-	       ntohs(netPlayer[pi]->uaddr.sin_port));
+    for (pi = 0; pi < maxHandlers; pi++)
+	{
+		if (netPlayer[pi] && !netPlayer[pi]->closed)
+			logDebugMessage(4," %d(%d-%d) %s:%d", pi, netPlayer[pi]->udpin,  netPlayer[pi]->udpout,  inet_ntoa(netPlayer[pi]->uaddr.sin_addr), ntohs(netPlayer[pi]->uaddr.sin_port));
     }
-    logDebugMessage(2,"\n");
+    logDebugMessage(3,"\n");
   } else {
     logDebugMessage(4,"Player slot %d uread() %s:%d len %d from %s:%d on %i\n",
 	   id,
@@ -272,6 +272,8 @@ NetHandler::NetHandler(PlayerInfo* _info, const struct sockaddr_in &clientAddr,
   perSecondCurrentBytes[1] = 0;
   perSecondMaxBytes[1] = 0;
 
+  acceptUDP = true;
+
 #endif
   if (!netPlayer[playerIndex])
     netPlayer[playerIndex] = this;
@@ -306,6 +308,8 @@ NetHandler::NetHandler(const struct sockaddr_in &_clientAddr, int _fd)
   perSecondMaxMsg[1] = 0;
   perSecondCurrentBytes[1] = 0;
   perSecondMaxBytes[1] = 0;
+
+  acceptUDP = true;
 
 #endif
 }
@@ -452,6 +456,11 @@ void NetHandler::closing()
   closed = true;
 }
 
+void NetHandler::SetAllowUDP(bool set)
+{
+	acceptUDP = set;
+}
+
 int NetHandler::pwrite(const void *b, int l) {
 
   if (l == 0) {
@@ -541,10 +550,18 @@ RxStatus NetHandler::tcpReceive() {
 
   callNetworkDataLog (false, false, (const unsigned char*)buf,len,this);
 
-  if (code == MsgUDPLinkEstablished) {
-    udpout = true;
-    logDebugMessage(2,"Player %s [%d] outbound UDP up\n", info->getCallSign(),
-	   playerIndex);
+  if (code == MsgUDPLinkEstablished)
+  {
+	  if (!acceptUDP)
+	  {
+		  closing();
+		  return ReadError;
+	  }
+	  else
+	  {
+		  udpout = true;
+		  logDebugMessage(2,"Player %s [%d] outbound UDP up\n", info->getCallSign(), playerIndex);
+	  }
   }
   return ReadAll;
 }

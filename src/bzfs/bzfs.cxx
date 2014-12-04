@@ -128,6 +128,7 @@ TimeKeeper countdownPauseStart = TimeKeeper::getNullTime();
 bool countdownActive = false;
 int countdownDelay = -1;
 int countdownResumeDelay = -1;
+int readySetGo = -1; // match countdown timer
 
 static ListServerLink *listServerLink = NULL;
 static int listServerLinksCount = 0;
@@ -748,6 +749,18 @@ void startCountdown ( int delay, float limit, const char *buyWho )
 	// make sure the game always start unpaused
 	clOptions->countdownPaused = false;
 	countdownPauseStart = TimeKeeper::getNullTime();
+}
+
+void cancelCountdown ( const char *byWho )
+{
+	if (byWho) {
+		sendMessage(ServerPlayer, AllPlayers, TextUtils::format("Countdown cancelled by %s.", byWho).c_str());
+	} else {
+		sendMessage(ServerPlayer, AllPlayers, "Countdown cancelled");
+	}
+
+	countdownDelay = -1;
+	readySetGo = -1;
 }
 
 PingPacket getTeamCounts()
@@ -5475,6 +5488,12 @@ static void processConnectedPeer(NetConnectedPeer& peer, int sockFD, fd_set& rea
 
 	  if (peer.bufferedInput.size() >= headerLen && strncmp(peer.bufferedInput.c_str(),header, headerLen) == 0)
 	  {
+	    if (peer.bufferedInput.size() > headerLen+2)
+	    {
+	      peer.deleteMe = true;
+	      return;
+	    }
+
 	    bz_AllowConnectionData_V1 data(getIPFromHandler(netHandler).c_str());
 	    worldEventManager.callEvents(&data);
 	    if (!data.allow)
@@ -6278,7 +6297,6 @@ int main(int argc, char **argv)
    **/
 
   int i;
-  int readySetGo = -1; // match countdown timer
   while (!done) {
 
     // see if the octree needs to be reloaded
